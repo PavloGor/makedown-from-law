@@ -1,6 +1,8 @@
 #  Law-to-Markdown (Ukrainian Legislation Converter for AI & LLMs)
 
-> **High-fidelity, zero-loss converter for Ukrainian legislation documents (`zakon.rada.gov.ua`) from HTML/HTM, DOCX, and PDF to clean, LLM-optimized UTF-8 Markdown.**
+> **High-fidelity, zero-loss converter for Ukrainian legislation documents (`zakon.rada.gov.ua`) from HTML/HTM, to clean, LLM-optimized UTF-8 Markdown.**
+>
+> 🇺🇦 **Високоточний конвертер нормативно-правових актів та законів України (`zakon.rada.gov.ua`) з форматів HTML/HTM у чистий Markdown (UTF-8), оптимізований для систем штучного інтелекту, LLM (GPT-4o, Claude, Gemini) та RAG-пайплайнів із 100% точним збереженням юридичного тексту без змін.**
 
 ---
 
