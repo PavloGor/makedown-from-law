@@ -896,9 +896,244 @@ def convert_htm_to_md(input_path: Path) -> str:
 # PDF / DOCX → MD (через markitdown)
 # ──────────────────────────────────────────────────────
 
+def _clean_markdown_inline(text: str) -> str:
+    # Merge adjacent bold tokens: **a** **b** -> **a b**
+    while re.search(r'\*\*(.+?)\*\*\s+\*\*(.+?)\*\*', text):
+        text = re.sub(r'\*\*(.+?)\*\*\s+\*\*(.+?)\*\*', r'**\1 \2**', text)
+    # Merge adjacent italic tokens: *a* *b* -> *a b*
+    while re.search(r'(?<!\*)\*(.+?)\*(?!\*)\s+(?<!\*)\*(.+?)\*(?!\*)', text):
+        text = re.sub(r'(?<!\*)\*(.+?)\*(?!\*)\s+(?<!\*)\*(.+?)\*(?!\*)', r'*\1 \2*', text)
+    text = re.sub(r'\s+([,\.;:])', r'\1', text)
+    return re.sub(r'[ \t]{2,}', ' ', text).strip()
+
+
+def _format_pdf_spans(spans: list) -> str:
+    formatted = []
+    for s in spans:
+        text = s.get('text', '')
+        if not text or not text.strip():
+            continue
+        core = text.strip()
+        
+        m_p = re.match(r'^(.*?)([,\.;:]+)$', core)
+        punct = ''
+        if m_p and m_p.group(1):
+            core = m_p.group(1)
+            punct = m_p.group(2)
+            
+        if s.get('bold'):
+            formatted.append(f'**{core}**{punct}')
+        elif s.get('italic'):
+            formatted.append(f'*{core}*{punct}')
+        else:
+            formatted.append(f'{core}{punct}')
+            
+    line = ' '.join(formatted)
+    return _clean_markdown_inline(line)
+
+
 def convert_pdf_to_md(input_path: Path) -> str:
-    from markitdown import MarkItDown
-    return MarkItDown().convert(str(input_path)).text_content
+    """
+    Високоточна геометрична конвертація PDF у чистий Markdown.
+    Зберігає герби, зображення, двоколонкові реквізити, підписи,
+    напівжирний/курсивний текст та об'єднує розбиті рядки в цілісні абзаци.
+    """
+    try:
+        import fitz
+    except ImportError:
+        try:
+            from markitdown import MarkItDown
+            return MarkItDown().convert(str(input_path)).text_content
+        except Exception:
+            raise
+
+    doc = fitz.open(str(input_path))
+    pages_md = []
+    
+    for page in doc:
+        page_width = page.rect.width
+        page_height = page.rect.height
+        elements = []
+        
+        # 1. Зображення (Герб України / логотипи)
+        for img_info in page.get_images():
+            xref = img_info[0]
+            for rect in page.get_image_rects(xref):
+                if rect.y0 < page_height * 0.25 and abs((rect.x0 + rect.x1)/2 - page_width/2) < page_width * 0.25:
+                    elements.append((rect.y0, rect.x0, rect.y1, rect.x1, 'img', '[Герб України]'))
+                else:
+                    elements.append((rect.y0, rect.x0, rect.y1, rect.x1, 'img', '[Зображення]'))
+                    
+        # 2. Векторні лінії (роздільники / підкреслення)
+        for d in page.get_drawings():
+            r = d.get('rect')
+            if r and r.width > page_width * 0.4 and r.height <= 3:
+                elements.append((r.y0, r.x0, r.y1, r.x1, 'hr', '---'))
+                
+        # 3. Текстові фрагменти (spans) з точними координатами та стилями
+        text_dict = page.get_text('dict')
+        for block in text_dict.get('blocks', []):
+            if block.get('type') == 0:
+                for line in block.get('lines', []):
+                    for span in line.get('spans', []):
+                        text = span.get('text', '')
+                        if not text or not text.strip():
+                            continue
+                        x0, y0, x1, y1 = span.get('bbox')
+                        flags = span.get('flags', 0)
+                        font = span.get('font', '').lower()
+                        size = span.get('size', 10)
+                        
+                        is_bold = bool(flags & (1 << 4)) or 'bold' in font or 'black' in font or 'heavy' in font
+                        is_italic = bool(flags & (1 << 1)) or 'italic' in font or 'oblique' in font
+                        
+                        elements.append((y0, x0, y1, x1, 'span', {
+                            'text': text,
+                            'x0': x0, 'y0': y0, 'x1': x1, 'y1': y1,
+                            'bold': is_bold, 'italic': is_italic, 'size': size
+                        }))
+
+        elements.sort(key=lambda el: (round(el[0], 1), round(el[1], 1)))
+        
+        # Групування у візуальні рядки за Y-координатою
+        visual_lines = []
+        curr_line = []
+        curr_y = None
+        curr_y1 = None
+        
+        for el in elements:
+            y0, x0, y1, x1, el_type, data = el
+            if curr_y is None or abs(y0 - curr_y) > 3.5:
+                if curr_line:
+                    visual_lines.append((curr_y, curr_y1, curr_line))
+                curr_line = [(x0, x1, el_type, data)]
+                curr_y = y0
+                curr_y1 = y1
+            else:
+                curr_line.append((x0, x1, el_type, data))
+                if y1 > curr_y1:
+                    curr_y1 = y1
+                
+        if curr_line:
+            visual_lines.append((curr_y, curr_y1, curr_line))
+            
+        rendered_blocks = []
+        
+        for y0, y1, line_items in visual_lines:
+            line_items.sort(key=lambda item: item[0])
+            
+            if any(item[2] in ('img', 'hr') for item in line_items):
+                for x0, x1, itype, data in line_items:
+                    if itype in ('img', 'hr'):
+                        rendered_blocks.append(('block', data, x0, y0, y1))
+                continue
+                
+            spans = [item[3] for item in line_items if item[2] == 'span']
+            if not spans:
+                continue
+                
+            min_x0 = spans[0]['x0']
+            
+            # Перевірка на дві колонки (розрив між фрагментами > 40pt)
+            has_gap = False
+            gap_idx = -1
+            for i in range(len(spans) - 1):
+                if spans[i+1]['x0'] - spans[i]['x1'] > 40:
+                    has_gap = True
+                    gap_idx = i
+                    break
+                    
+            if has_gap and gap_idx >= 0:
+                left = _format_pdf_spans(spans[:gap_idx+1])
+                right = _format_pdf_spans(spans[gap_idx+1:])
+                rendered_blocks.append(('col', f'{left:<35} {right}', min_x0, y0, y1))
+            else:
+                line_str = _format_pdf_spans(spans)
+                clean_plain = _safe_unspace(re.sub(r'[\*_\s]+', ' ', line_str)).strip()
+                
+                # Розділювач або підкреслення футера
+                if re.search(r'_{10,}', line_str) or (len(line_str) >= 10 and not line_str.strip('* _-')):
+                    rendered_blocks.append(('block', '---', min_x0, y0, y1))
+                # Заголовки органів влади
+                elif re.match(r'^(?:МІНІСТЕРСТВО|ВЕРХОВНА РАДА|КАБІНЕТ МІНІСТРІВ|ПРЕЗИДЕНТ)\s+[А-ЯІЇЄҐA-Z\s]+$', clean_plain):
+                    rendered_blocks.append(('block', f'# {clean_plain}', min_x0, y0, y1))
+                # Вид нормативного акту
+                elif re.match(r'^(?:ЗАКОН УКРАЇНИ|ПОСТАНОВА|НАКАЗ|УКАЗ|РОЗПОРЯДЖЕННЯ|РІШЕННЯ|ДЕКРЕТ)(?:\s+ВЕРХОВНОЇ\s+РАДИ\s+УКРАЇНИ)?$', clean_plain):
+                    rendered_blocks.append(('block', f'# {clean_plain}', min_x0, y0, y1))
+                # Розділи / статті
+                elif re.match(r'^(?:Розділ|Глава|Книга|Частина|Стаття)\s+[IVXLCDM\d]+', clean_plain, re.IGNORECASE):
+                    rendered_blocks.append(('block', f'## {line_str}', min_x0, y0, y1))
+                # Відомості ВВР
+                elif re.search(r'Відомості\s+Верховної\s+Ради', clean_plain, re.IGNORECASE):
+                    clean_vvr = line_str.strip(' *()')
+                    rendered_blocks.append(('block', f'*({clean_vvr})*', min_x0, y0, y1))
+                # Зміни
+                elif re.match(r'^(?:\{|\()?\s*[\*_]*(?:Із\s+змінами|Наказ\s+втратив|Втратив\s+чинність)', clean_plain, re.IGNORECASE):
+                    clean_ch = line_str.strip(' *()')
+                    rendered_blocks.append(('block', f'> *{{{clean_ch}}}*', min_x0, y0, y1))
+                else:
+                    rendered_blocks.append(('line', line_str, min_x0, y0, y1))
+                    
+        # Формування абзаців
+        final_doc_lines = []
+        cur_para = []
+        prev_y1 = None
+        prev_is_right = False
+        
+        for b_type, text, x0, y0, y1 in rendered_blocks:
+            if not text:
+                continue
+            if b_type in ('block', 'col'):
+                if cur_para:
+                    final_doc_lines.append(_clean_markdown_inline(' '.join(cur_para)))
+                    cur_para = []
+                final_doc_lines.append(text)
+                prev_y1 = y1
+                prev_is_right = False
+            elif b_type == 'line':
+                is_subject = bool(re.match(r'^\*[^*].*?[^*]\*$', text))
+                is_annex = text.startswith('Додаток:')
+                is_number = bool(re.match(r'^\d{2}\.\d{2}\.\d{4}\s+(?:N|№)', text))
+                is_right_aligned = x0 > page_width * 0.45
+                
+                line_gap = (y0 - prev_y1) if prev_y1 is not None else 0
+                is_large_gap = line_gap > 10
+                
+                if is_subject or is_annex or is_number or is_right_aligned or text.startswith('#') or is_large_gap:
+                    if cur_para:
+                        final_doc_lines.append(_clean_markdown_inline(' '.join(cur_para)))
+                        cur_para = []
+                    
+                    if is_right_aligned:
+                        if prev_is_right and line_gap < 8 and final_doc_lines and not final_doc_lines[-1].startswith('#'):
+                            final_doc_lines[-1] += '\n' + text
+                        else:
+                            final_doc_lines.append(text)
+                        prev_is_right = True
+                    else:
+                        prev_is_right = False
+                        if is_subject or is_annex or is_number or text.startswith('#'):
+                            final_doc_lines.append(text)
+                        else:
+                            cur_para.append(text)
+                else:
+                    prev_is_right = False
+                    cur_para.append(text)
+                    if text.endswith(('.', '!', '?', ':')):
+                        final_doc_lines.append(_clean_markdown_inline(' '.join(cur_para)))
+                        cur_para = []
+                        
+                prev_y1 = y1
+                
+        if cur_para:
+            final_doc_lines.append(_clean_markdown_inline(' '.join(cur_para)))
+            
+        pages_md.append('\n\n'.join(final_doc_lines))
+        
+    res = '\n\n---\n\n'.join(pages_md)
+    # Нормалізація пробілів та порожніх рядків
+    res = re.sub(r'\n{3,}', '\n\n', res)
+    return res.strip() + '\n'
 
 
 def convert_docx_to_md(input_path: Path) -> str:
