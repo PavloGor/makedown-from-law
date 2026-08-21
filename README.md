@@ -1,12 +1,12 @@
-#  Law-to-Markdown (Ukrainian Legislation Converter for AI & LLMs)
+# Law-to-Markdown (Ukrainian Legislation Converter for AI & LLMs)
 
-> **High-fidelity, zero-loss converter for Ukrainian legislation documents (`zakon.rada.gov.ua`) from HTML/HTM, to clean, LLM-optimized UTF-8 Markdown.**
+> **High-fidelity, zero-loss converter for Ukrainian legislation documents (`zakon.rada.gov.ua`) from HTML/HTM, DOCX, and PDF to clean, LLM-optimized UTF-8 Markdown.**
 >
-> 🇺🇦 **Високоточний конвертер нормативно-правових актів та законів України (`zakon.rada.gov.ua`) з форматів HTML/HTM у чистий Markdown (UTF-8), оптимізований для систем штучного інтелекту, LLM (GPT-4o, Claude, Gemini) та RAG-пайплайнів із 100% точним збереженням юридичного тексту без змін.**
+> 🇺🇦 **Високоточний конвертер нормативно-правових актів та законів України (`zakon.rada.gov.ua`) з форматів HTML/HTM, DOCX та PDF у чистий Markdown (UTF-8), оптимізований для систем штучного інтелекту, LLM (GPT-4o, Claude, Gemini) та RAG-пайплайнів із 100% точним збереженням юридичного тексту без змін.**
 
 ---
 
-##  Table of Contents
+## Table of Contents
 - [Overview](#overview)
 - [Why Markdown for AI & LLMs?](#why-markdown-for-ai--llms)
 - [Token & File Size Comparison Benchmark](#token--file-size-comparison-benchmark)
@@ -57,7 +57,7 @@ Amendments and constitutional court notes are automatically grouped into standar
 
 ---
 
-## Token & File Size Comparison Benchmark
+## 📊 Token & File Size Comparison Benchmark
 
 Comparison of original official HTML downloads (`.htm`) vs. converted Markdown (`.md`):
 
@@ -112,10 +112,9 @@ Comparison of original official HTML downloads (`.htm`) vs. converted Markdown (
 makedown-from-law/
 ├── law_to_md.py         # Main Python conversion engine
 ├── convert.cmd          # Windows interactive batch menu & drag-and-drop runner
-├── Examples/            # Sample source files (.htm, .docx, .pdf)
+├── input/               # Drop folder for bulk batch conversion
 │   ├── Про відпустки ... .htm
 │   └── Про доступ до публічної інформації ... .htm
-├── input/               # Drop folder for bulk batch conversion
 ├── Output/              # Destination folder for converted .md files
 └── README.md            # Documentation and benchmarks
 ```
@@ -152,16 +151,15 @@ An interactive menu will appear:
           КОНВЕРТЕР ЗАКОНІВ УКРАЇНИ В MARKDOWN (UTF-8)
 ================================================================
 
- [1] Пакетна конвертація з папки "input"     (всі файли -> Output)
- [2] Пакетна конвертація з папки "Examples"  (всі файли -> Output)
- [3] Конвертувати окремий файл (ввести шлях або перетягнути сюди)
- [4] Конвертувати тільки .htm / .html з папки "input"
- [5] Вказати власні папки (Вхідна тека -> Вихідна тека)
- [6] Відкрити папку з результатами (Output)
+ [1] Пакетна конвертація з папки "input" (всі файли -> Output)
+ [2] Конвертувати окремий файл (ввести шлях або перетягнути сюди)
+ [3] Конвертувати тільки .htm / .html з папки "input"
+ [4] Вказати власні папки (Вхідна тека -> Вихідна тека)
+ [5] Відкрити папку з результатами (Output)
  [0] Вихід
 
 ================================================================
-Оберіть варіант [0-6] і натисніть Enter:
+Оберіть варіант [0-5] і натисніть Enter:
 ```
 
 > 💡 **Drag & Drop Tip**: You can drag and drop any `.htm`, `.html`, `.docx`, or `.pdf` file directly onto the `convert.cmd` file in Windows Explorer to convert it instantly!
@@ -206,7 +204,7 @@ print(f"Saved to: {out_md_path}")
 
 ---
 
-## 🏛️ Document Structure Mapping
+## Document Structure Mapping
 
 | HTML Element (zakon.rada.gov.ua) | Output Markdown | Description |
 | :--- | :--- | :--- |
@@ -222,7 +220,7 @@ print(f"Saved to: {out_md_path}")
 
 ---
 
-## 📄 Output Sample Preview
+## Output Sample Preview
 
 ```markdown
 [Герб України]
@@ -268,7 +266,7 @@ print(f"Saved to: {out_md_path}")
 
 ---
 
-## 👨‍💻 Creator & License
+## Creator & License
 
 - **Creator**: **Paul Gorinetsky**
 - **License**: [MIT License](LICENSE) — Open-source and free for commercial and non-commercial use.

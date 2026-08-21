@@ -239,9 +239,13 @@ def _render_pre_inline(node) -> str:
                 if inner:
                     parts.append(f'*{inner}*')
             elif name == 'a':
+                href = child.get('href', '').strip()
                 inner = _render_pre_inline(child).strip()
                 if inner:
-                    parts.append(inner)
+                    if href:
+                        parts.append(f'[{inner}]({href})')
+                    else:
+                        parts.append(inner)
             elif name == 'img':
                 title = child.get('title') or child.get('alt') or ''
                 if title:
@@ -251,10 +255,106 @@ def _render_pre_inline(node) -> str:
     return ''.join(parts)
 
 
+def _safe_unspace(text: str) -> str:
+    """
+    Розгортає літери, написані врозрядку (Н А К А З -> НАКАЗ, П О С Т А Н О В А -> ПОСТАНОВА),
+    не зливаючи звичайні короткі українські слова (що є у, в, і, з).
+    """
+    # 1. Великі літери врозрядку від 3 літер: 'П О С Т А Н О В А' -> 'ПОСТАНОВА', 'Н А К А З' -> 'НАКАЗ'
+    text = re.sub(r'\b(?:[А-ЯA-ZІЇЄҐ]\s+){2,}[А-ЯA-ZІЇЄҐ]\b', lambda m: m.group(0).replace(' ', ''), text)
+
+    # 2. Відомі службові дієслова та слова врозрядку (малі/великі)
+    known_spaced = [
+        (r'п\s+о\s+с\s+т\s+а\s+н\s+о\s+в\s+л\s+я\s+є', 'постановляє'),
+        (r'н\s+а\s+к\s+а\s+з\s+у\s+ю', 'наказую'),
+        (r'з\s+а\s+т\s+в\s+е\s+р\s+д\s+ж\s+е\s+н\s+о', 'затверджено'),
+        (r'п\s+о\s+л\s+о\s+ж\s+е\s+н\s+н\s+я', 'положення'),
+        (r'п\s+о\s+р\s+я\s+д\s+о\s+к', 'порядок'),
+        (r'і\s+н\s+с\s+т\s+р\s+у\s+к\s+ц\s+і\s+я', 'інструкція'),
+        (r'п\s+р\s+а\s+в\s+и\s+л\s+а', 'правила'),
+    ]
+    for pat, rep in known_spaced:
+        text = re.sub(pat, lambda m: rep.upper() if m.group(0).isupper() else rep, text, flags=re.IGNORECASE)
+    return text
+
+
+def _render_pre_raw_lines(pre_tag) -> list:
+    """Розбиває <pre> на сирі рядки за тегами <br> та \\n, зберігаючи форматування та пробіли колонок."""
+    from bs4 import NavigableString, Tag
+    lines = []
+    cur = []
+    
+    def flush():
+        full = ''.join(cur)
+        cur.clear()
+        for sub in full.split('\n'):
+            lines.append(sub)
+            
+    def rec(node, is_bold=False, is_italic=False):
+        for c in node.children:
+            if isinstance(c, NavigableString):
+                t = unicodedata.normalize('NFC', str(c)).replace('\xa0', ' ').replace('\r', '')
+                if '\n' in t:
+                    parts = t.split('\n')
+                    for i, p in enumerate(parts):
+                        if i > 0:
+                            flush()
+                        if p:
+                            l_sp = len(p) - len(p.lstrip(' '))
+                            r_sp = len(p) - len(p.rstrip(' '))
+                            core = p.strip()
+                            if core:
+                                if is_bold:
+                                    core = f'**{core}**'
+                                if is_italic:
+                                    core = f'*{core}*'
+                                cur.append(' ' * l_sp + core + ' ' * r_sp)
+                            else:
+                                cur.append(p)
+                else:
+                    if t:
+                        l_sp = len(t) - len(t.lstrip(' '))
+                        r_sp = len(t) - len(t.rstrip(' '))
+                        core = t.strip()
+                        if core:
+                            if is_bold:
+                                core = f'**{core}**'
+                            if is_italic:
+                                core = f'*{core}*'
+                            cur.append(' ' * l_sp + core + ' ' * r_sp)
+                        else:
+                            cur.append(t)
+            elif isinstance(c, Tag):
+                if c.name == 'br':
+                    flush()
+                elif c.name in ('b', 'strong'):
+                    rec(c, is_bold=True, is_italic=is_italic)
+                elif c.name in ('em', 'i'):
+                    rec(c, is_bold=is_bold, is_italic=True)
+                elif c.name == 'a':
+                    href = c.get('href', '').strip()
+                    in_t = _strip(c.get_text())
+                    if in_t:
+                        if href:
+                            cur.append(f'[{in_t}]({href})')
+                        else:
+                            cur.append(in_t)
+                elif c.name == 'img':
+                    title = c.get('title') or c.get('alt') or ''
+                    if title:
+                        cur.append(f'[{title}]')
+                else:
+                    rec(c, is_bold=is_bold, is_italic=is_italic)
+    rec(pre_tag)
+    if cur:
+        flush()
+    return lines
+
+
 def _render_pre_block(pre_tag) -> str:
     """
     Рендерить <pre> блок у MD-рядок.
-    <br> → \n, <b> → **bold**, <em> → *italic*, <a> → plain text.
+    <br> → \\n, <b> → **bold**, <em> → *italic*, <a> → link/text.
     Видаляє зайві пробіли між словами (pre зберігає пробіли для форматування).
     """
     from bs4 import NavigableString, Tag
@@ -276,9 +376,13 @@ def _render_pre_block(pre_tag) -> str:
                 if inner:
                     parts.append(f'*{inner}*')
             elif name == 'a':
+                href = child.get('href', '').strip()
                 inner = _render_pre_inline(child).strip()
                 if inner:
-                    parts.append(inner)
+                    if href:
+                        parts.append(f'[{inner}]({href})')
+                    else:
+                        parts.append(inner)
             elif name == 'img':
                 title = child.get('title') or child.get('alt') or ''
                 if title:
@@ -287,15 +391,14 @@ def _render_pre_block(pre_tag) -> str:
                 parts.append(_render_pre_inline(child))
 
     text = ''.join(parts)
-    # Нормалізуємо рядки: collapse пробіли всередині кожного рядка,
-    # але зберігаємо розриви рядків
     lines = text.split('\n')
     lines = [re.sub(r'[ \t]{2,}', ' ', ln).strip() for ln in lines]
-    # Видаляємо порожні рядки лише з початку і кінця блоку
     while lines and not lines[0]:
         lines.pop(0)
     while lines and not lines[-1]:
         lines.pop()
+    return '\n'.join(lines)
+
 def _render_stamp_node(node) -> str:
     """Рендерить вузол всередині штампу з посиланнями та форматуванням."""
     if not node:
@@ -458,27 +561,171 @@ def convert_htm_to_md(input_path: Path) -> str:
 
         # ── pre — блок preformatted (старий стиль rada.gov.ua) ──
         if tag_name == 'pre':
-            text = _render_pre_block(node)
-            if not text:
+            for img in node.find_all('img'):
+                img_title = img.get('title') or img.get('alt') or ''
+                if img_title:
+                    add_blank()
+                    add(f'[{img_title}]')
+                    add_blank()
+                img.decompose()
+
+            raw_lines = _render_pre_raw_lines(node)
+            if not raw_lines or not any(ln.strip() for ln in raw_lines):
                 return
-            # Перевіряємо em всередині — якщо є, blockquote
-            has_em = bool(node.find('em'))
-            # bold всередині → центральний заголовок або bold параграф
-            has_b = bool(node.find('b'))
-            if has_em and not has_b:
+
+            non_empty_raw = [ln.rstrip() for ln in raw_lines if ln.strip()]
+            plain = ' '.join(re.sub(r'[ \t]{2,}', ' ', ln).strip() for ln in non_empty_raw)
+            plain = _safe_unspace(plain)
+            clean_plain = re.sub(r'[\*_\s]+', ' ', plain).strip()
+
+            has_em = bool(node.find('em') or node.find('i'))
+            has_b = bool(node.find('b') or node.find('strong'))
+
+            # 1. Двоколонковий заголовок реєстрації (N 293... / Зареєстровано в Міністерстві...)
+            if ('Зареєстровано в Міністерстві' in plain or 'Зареєстровано в Мінюсті' in plain) and any(re.search(r'[ \t]{4,}', ln) for ln in non_empty_raw):
+                left_col = []
+                right_col = []
+                for ln in non_empty_raw:
+                    ln_norm = _safe_unspace(ln)
+                    parts = [p.strip() for p in re.split(r'[ \t]{4,}', ln_norm) if p.strip()]
+                    if len(parts) >= 2:
+                        left_col.append(parts[0])
+                        right_col.append(' '.join(parts[1:]))
+                    elif len(parts) == 1:
+                        leading = len(ln) - len(ln.lstrip(' '))
+                        if leading >= 18 or any(kw in parts[0] for kw in ('Зареєстровано', 'юстиції', 'серпня', 'за N', 'від ')):
+                            right_col.append(parts[0])
+                        else:
+                            left_col.append(parts[0])
                 add_blank()
-                for line in text.split('\n'):
-                    line = line.strip()
-                    if line:
-                        fmted = f'*{line}*' if not (line.startswith('*') and line.endswith('*')) else line
-                        out.append('> ' + fmted)
+                for l in left_col:
+                    add(l)
+                if right_col:
+                    add(' '.join(right_col))
+                add_blank()
                 return
-            # Звичайний pre блок
+
+            # 2. Орган видачі (МІНІСТЕРСТВО ОСВІТИ... / КАБІНЕТ МІНІСТРІВ... / ВЕРХОВНА РАДА...)
+            if re.match(r'^(?:МІНІСТЕРСТВО|ДЕРЖАВНИЙ КОМІТЕТ|КАБІНЕТ МІНІСТРІВ|ПРЕЗИДЕНТ|ВЕРХОВНА РАДА)\s+[А-ЯІЇЄҐA-Z\s]+$', clean_plain):
+                add_blank()
+                add(f'# {clean_plain}')
+                add_blank()
+                return
+
+            # 3. Вид акту (НАКАЗ / ПОСТАНОВА / РОЗПОРЯДЖЕННЯ / РІШЕННЯ / УКАЗ / ДЕКРЕТ / ЗАКОН УКРАЇНИ / ПОСТАНОВА ВЕРХОВНОЇ РАДИ УКРАЇНИ)
+            if re.match(r'^(?:НАКАЗ|ПОСТАНОВА|РОЗПОРЯДЖЕННЯ|РІШЕННЯ|УКАЗ|ДЕКРЕТ|ЗАКОН УКРАЇНИ)(?:\s+ВЕРХОВНОЇ\s+РАДИ\s+УКРАЇНИ)?$', clean_plain):
+                add_blank()
+                add(f'# {clean_plain}')
+                add_blank()
+                return
+
+            # 4. Назва документа (весь блок у <b> та починається з "Про ...")
+            if has_b and not has_em and not re.match(r'^\d+[\.\)]', clean_plain) and re.match(r'^Про\s+', clean_plain):
+                add_blank()
+                add(f'# {clean_plain}')
+                add_blank()
+                return
+
+            # 5. Підзаконні положення / розділи (ПОЛОЖЕННЯ ..., 1. ЗАГАЛЬНІ ПОЛОЖЕННЯ, 8. АДРЕСИ СТОРІН...)
+            if re.match(r'^(?:ПОЛОЖЕННЯ|ІНСТРУКЦІЯ|ПОРЯДОК|ПРАВИЛА)(?:\s+про\s+.*)?$', clean_plain, re.IGNORECASE):
+                add_blank()
+                if len(non_empty_raw) >= 2:
+                    h2 = re.sub(r'[\*_\s]+', ' ', non_empty_raw[0]).strip()
+                    h3 = re.sub(r'[\*_\s]+', ' ', ' '.join(non_empty_raw[1:])).strip()
+                    add(f'## {h2}')
+                    add_blank()
+                    add(f'### {h3}')
+                else:
+                    add(f'## {clean_plain}')
+                add_blank()
+                return
+
+            if (re.match(r'^(?:(?:\d+\.|\b[IVXLCDM]+\.?)\s+)?[А-ЯІЇЄҐA-Z\s\.,\-\–—\(\)]+$', clean_plain)
+                and len(clean_plain) >= 5
+                and not re.search(r'_{3,}', plain)):
+                add_blank()
+                add(f'## {clean_plain}')
+                add_blank()
+                return
+
+            # 6. Відомості ВВР
+            if re.search(r'Відомості\s+Верховної\s+Ради', plain, re.IGNORECASE):
+                clean_vvr = plain.strip(' *')
+                if not clean_vvr.startswith('('):
+                    clean_vvr = f'({clean_vvr})'
+                add_blank()
+                add(f'*{clean_vvr}*')
+                add_blank()
+                return
+
+            # 7. Блок змін / втрати чинності (Із змінами..., Наказ втратив чинність..., У назві і тексті...)
+            if re.match(r'^(?:\{|\()?\s*[\*_]*(?:Із\s+змінами|Наказ\s+втратив|У\s+назві\s+і\s+тексті|Втратив\s+чинність|Щодо\s+визнання|Преамбула\s+із\s+змінами|Назва\s+із\s+змінами)', clean_plain, re.IGNORECASE):
+                add_blank()
+                full = ' '.join(re.sub(r'\s+', ' ', ln).strip() for ln in non_empty_raw)
+                full = _safe_unspace(full)
+                full = re.sub(r'\s+', ' ', full).strip(' *()')
+                full = re.sub(r'\(\s+\[', '([', full)
+                full = re.sub(r'\]\s+\)', '])', full)
+                full = re.sub(r'\)\s+\)', '))', full)
+                if len(re.findall(r'(?:N|№)\s*\d+', full)) > 1 and ('Із змінами' in full or 'внесеними згідно' in full):
+                    parts = re.split(r'(?=(?:N|№)\s*\d+)', full)
+                    clean_parts = [re.sub(r'\s+', ' ', p).strip(' ,;()*\t\n\r') for p in parts if p.strip(' ,;()*\t\n\r')]
+                    for i, p in enumerate(clean_parts):
+                        p = re.sub(r'\(\s+\[', '([', p)
+                        p = re.sub(r'\]\s+\)', '])', p)
+                        p = re.sub(r'\)\s+\)', '))', p)
+                        if i == 0:
+                            add(f'> *{{{p}*')
+                        elif i == len(clean_parts) - 1:
+                            add(f'> *{p}}}*')
+                        else:
+                            add(f'> *{p}*')
+                else:
+                    add(f'> *{{{full}}}*')
+                add_blank()
+                return
+
+            # 8. Підпис або гриф ЗАТВЕРДЖЕНО
+            if re.match(r'^(?:ЗАТВЕРДЖЕНО|Міністр|Голова|Президент|м\.\s*Київ)', clean_plain):
+                add_blank()
+                for ln in non_empty_raw:
+                    ln_clean = _safe_unspace(re.sub(r'[ \t]{2,}', ' ', ln).strip())
+                    add(ln_clean)
+                add_blank()
+                return
+
+            # 9. Форма / бланки з полями підкреслення (___) або двоколонкові реквізити/підписи
+            has_blanks = any('___' in ln for ln in raw_lines)
+            has_columns = any(re.search(r'\S[ \t]{4,}\S', ln) for ln in raw_lines)
+
+            if has_blanks or has_columns:
+                add_blank()
+                for ln in raw_lines:
+                    if not ln.strip():
+                        add_blank()
+                        continue
+                    m = re.match(r'^\s*(\S.*?)[ \t]{4,}(\S.*?)\s*$', ln)
+                    if m:
+                        c1 = _safe_unspace(re.sub(r'[ \t]{2,}', ' ', m.group(1)).strip())
+                        c2 = _safe_unspace(re.sub(r'[ \t]{2,}', ' ', m.group(2)).strip())
+                        add(f'{c1:<35} {c2}')
+                    elif re.match(r'^\s{18,}(\S.*?)\s*$', ln):
+                        c2 = _safe_unspace(re.sub(r'[ \t]{2,}', ' ', ln).strip())
+                        add(f'{"":<35} {c2}')
+                    else:
+                        clean_ln = _safe_unspace(re.sub(r'[ \t]{2,}', ' ', ln).strip())
+                        add(clean_ln)
+                add_blank()
+                return
+
+            # 10. Звичайний абзац / пункт
+            joined = ' '.join(re.sub(r'[ \t]{2,}', ' ', ln).strip() for ln in non_empty_raw if ln.strip())
+            joined = _safe_unspace(joined)
+            joined = re.sub(r'\(\s+', '(', joined)
+            joined = re.sub(r'\s+\)', ')', joined)
+            joined = re.sub(r'\s+([,\.;:])', r'\1', joined)
             add_blank()
-            for line in text.split('\n'):
-                stripped = line.strip()
-                if stripped:
-                    add(stripped)
+            add(joined)
             return
 
         # ── h1-h6 ──
